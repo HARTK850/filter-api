@@ -1,37 +1,35 @@
 /**
  * Yemot HaMashiach - Audio File Filter & Approval API
- * Deployed on Vercel Serverless Functions
  * Path: api/filter.js
  */
 
 export default async function handler(req, res) {
-    // תמיכה ב-GET ו-POST - איחוד הפרמטרים לאובייקט אחד
+    // איחוד פרמטרים של GET ו-POST
     const params = { ...req.query, ...req.body };
 
-    // משיכת פרמטרי אבטחה ממשתני הסביבה של Vercel
-    const YEMOT_TOKEN = process.env.YEMOT_TOKEN;
+    // 1. משיכת הטוקן שהוגדר בימות המשיח (דרך api_add_X=yemot_token=...)
+    const YEMOT_TOKEN = params.yemot_token;
     const YEMOT_BASE_URL = 'https://www.call2all.co.il/ym/api/';
 
     if (!YEMOT_TOKEN) {
-        console.error("Missing YEMOT_TOKEN environment variable.");
-        return sendYemotResponse(res, "t-שגיאת מערכת חמורה. חסר אסימון התחברות.");
+        console.error("Missing yemot_token parameter.");
+        return sendYemotResponse(res, "t-שגיאת מערכת. חסר אסימון התחברות בהגדרות השלוחה.&go_to_folder=.");
     }
 
     try {
-        // שלב 2: תפיסת התשובה מהמשתמש (לאחר בחירה בתפריט הקולי)
-        // ה-API שלנו שתל את הנתיב המקודד ב-Base64 בתוך שם המשתנה שמתחיל ב-Approve_
+        // שלב 2: עיבוד תשובת המשתמש (זיהוי אם אנחנו אחרי תפריט האישור)
+        // הנתון נשמר בתוך שם משתנה שמתחיל ב-Approve_
         const approveKey = Object.keys(params).find(key => key.startsWith('Approve_'));
 
         if (approveKey) {
             return await handleUserSelection(res, params, approveKey, YEMOT_TOKEN, YEMOT_BASE_URL);
         } 
         
-        // שלב 1: כניסה ראשונית מהשלוחה - זיהוי הקובץ ובניית תפריט רובוטי (TTS)
+        // שלב 1: כניסה למודול ממקש ניהול (למשל מקש 8 במהלך השמעת הקובץ)
         if (params.what && params.ApiExtension) {
             return await handleInitialTrigger(res, params);
         }
 
-        // במקרה שאין פרמטרים תקינים
         return sendYemotResponse(res, "t-שגיאה. לא התקבל קובץ או נתיב שלוחה תקין משרת ימות המשיח.&go_to_folder=.");
 
     } catch (error) {
@@ -41,37 +39,33 @@ export default async function handler(req, res) {
 }
 
 /**
- * שלב 1: טיפול בכניסה הראשונית ובניית תפריט בחירה ב-Read
+ * שלב 1: זיהוי הקובץ והשמעת תפריט רובוטי מותאם
  */
 async function handleInitialTrigger(res, params) {
     const { what, ApiExtension } = params;
     
-    // זיהוי מקור הקובץ על בסיס הנתיבים
+    // זיהוי מקור הקובץ על בסיס הנתיב
     const origin = getFileOrigin(what, ApiExtension);
     
-    // בניית ההודעה הרובוטית ב-TTS
     const ttsOriginText = origin === 'website' 
         ? 'הקובץ הועלה דרך אתר הניהול' 
         : `הקובץ הוקלט בשלוחה ${origin}`;
         
-    const ttsPrompt = `t-${ttsOriginText}. לאישור הקובץ והעלאתו למערכת הקישו 1. למחיקת הקובץ הקישו 2. לביטול וחזרה הקישו 3.`;
+    const ttsPrompt = `t-${ttsOriginText}. t-לאישור הקובץ והעלאתו למערכת הקישו 1. t-למחיקת הקובץ הקישו 2. t-לביטול וחזרה הקישו 3.`;
 
-    // קידוד נתיב הקובץ ב-Base64 כדי להעביר אותו כחלק משם המשתנה (Stateless Pattern)
+    // קידוד הנתיב ב-Base64 בתוך שם המשתנה (כדי לשמור אותו לשלב הבא בלי לשבור את המבנה)
     const encodedWhat = Buffer.from(what).toString('base64');
     const varName = `Approve_${encodedWhat}`;
 
-    // בניית פקודת Read לימות המשיח
-    // read=[השמעה]=[שם משתנה],[שימוש בקיים],[אורך מקס],[אורך מינ],[זמן המתנה],[צורת השמעה],[חסימת כוכבית],[חסימת אפס]
+    // בניית פקודת Read לימות המשיח (הקראה רובוטית + קליטת ספרה אחת)
     const readCommand = `read=${ttsPrompt}=${varName},no,1,1,7,No,yes,no`;
 
     console.log(`[Initial Trigger] File: ${what}, Origin: ${origin}. Sending read menu.`);
-    
-    // החזרת הפקודה למערכת
     return res.status(200).send(readCommand);
 }
 
 /**
- * שלב 2: עיבוד בחירת המשתמש לאחר תפריט ה-Read וביצוע הפעולה מול שרתי ימות המשיח
+ * שלב 2: ביצוע פעולה על פי בחירת המשתמש
  */
 async function handleUserSelection(res, params, approveKey, token, baseUrl) {
     const action = params[approveKey]; // יכיל 1, 2, או 3
@@ -81,12 +75,12 @@ async function handleUserSelection(res, params, approveKey, token, baseUrl) {
 
     console.log(`[User Action] File: ${what}, Action Selected: ${action}`);
 
-    // פעולה 3: ביטול
+    // ביטול
     if (action === '3') {
         return sendYemotResponse(res, "t-הפעולה בוטלה.&go_to_folder=.");
     }
 
-    // פעולה 2: מחיקה
+    // מחיקת הקובץ
     if (action === '2') {
         const deleteSuccess = await executeYemotFileAction(baseUrl, token, 'delete', what);
         if (deleteSuccess) {
@@ -96,7 +90,7 @@ async function handleUserSelection(res, params, approveKey, token, baseUrl) {
         }
     }
 
-    // פעולה 1: אישור והעברה ליעד דינמי
+    // אישור הקובץ (העברה ליעד)
     if (action === '1') {
         const origin = getFileOrigin(what, ApiExtension);
         const destination = await getDestinationFromExtIni(baseUrl, token, ApiExtension, origin);
@@ -106,7 +100,10 @@ async function handleUserSelection(res, params, approveKey, token, baseUrl) {
             return sendYemotResponse(res, `t-לא הוגדר יעד להעברה עבור מקור ${origin === 'website' ? 'אתר הניהול' : origin}.&go_to_folder=.`);
         }
 
-        // ביצוע העברה
+        // וידוא שהשלוחה קיימת, ואם לא - יצירתה אוטומטית
+        await ensureFolderExists(baseUrl, token, destination);
+
+        // ביצוע העברה ליעד
         const targetPath = destination.startsWith('ivr2:') ? destination : `ivr2:${destination.startsWith('/') ? '' : '/'}${destination}`;
         const moveSuccess = await executeYemotFileAction(baseUrl, token, 'move', what, targetPath);
 
@@ -117,48 +114,52 @@ async function handleUserSelection(res, params, approveKey, token, baseUrl) {
         }
     }
 
-    // אם הוקש משהו אחר
     return sendYemotResponse(res, "t-בחירה לא חוקית.&go_to_folder=.");
 }
 
 /**
- * פונקציית עזר: חישוב מקור הקובץ (אתר הניהול או תת-שלוחה)
+ * חילוץ מקור הקובץ בצורה בטוחה
  */
 function getFileOrigin(what, apiExtension) {
-    // דוגמה: 
-    // ApiExtension = /5
-    // what = ivr2:/5/1/000.wav -> מקור 1
-    // what = ivr2:/5/000.wav -> מקור website
+    // what example: "ivr2:/9/1/000.wav" or "ivr2:/9/000.wav"
+    // apiExtension example: "9" or "/9"
 
-    const cleanWhat = what.replace('ivr2:', '');
-    const extensionPrefix = apiExtension.endsWith('/') ? apiExtension : `${apiExtension}/`;
+    let cleanWhat = what.replace('ivr2:', ''); 
+    let ext = apiExtension; 
     
-    // מחיקת הקידומת של השלוחה הנוכחית מהנתיב המלא
-    const relativePath = cleanWhat.replace(extensionPrefix, '');
-    const pathParts = relativePath.split('/');
+    // נרמול הוספת סלאשים
+    if (!ext.startsWith('/')) ext = '/' + ext; 
+    if (!ext.endsWith('/')) ext = ext + '/';   
 
-    // אם יש רק חלק אחד (למשל 000.wav), הקובץ יושב בשלוחה הראשית של מודול הסינון
-    if (pathParts.length === 1) {
-        return 'website';
+    if (cleanWhat.startsWith(ext)) {
+        let relativePath = cleanWhat.substring(ext.length); 
+        let parts = relativePath.split('/');
+        
+        // אם יש רק את שם הקובץ (ללא תת-תיקייה), הועלה ישירות לאתר/שלוחה הראשית
+        if (parts.length === 1) {
+            return 'website';
+        } else {
+            // תחזיר את שם תת-התיקייה הראשונה
+            return parts[0]; 
+        }
     }
-
-    // אם יש יותר מחלק אחד (למשל 1/000.wav), התיקייה הראשונה היא המקור
-    return pathParts[0];
+    
+    return 'website'; // ברירת מחדל
 }
 
 /**
- * פונקציית עזר: קריאת קובץ ext.ini משרת ימות המשיח וחילוץ נתיב היעד
+ * קריאת הגדרות custom_route מקובץ ext.ini דרך ה-API של ימות המשיח
  */
 async function getDestinationFromExtIni(baseUrl, token, apiExtension, origin) {
     try {
-        const extIniPath = `ivr2:${apiExtension}/ext.ini`;
+        let ext = apiExtension;
+        if (!ext.startsWith('/')) ext = '/' + ext;
+        const extIniPath = `ivr2:${ext}/ext.ini`;
+
         const url = `${baseUrl}DownloadFile?token=${encodeURIComponent(token)}&path=${encodeURIComponent(extIniPath)}`;
         
         const response = await fetch(url);
-        if (!response.ok) {
-            console.error(`Failed to download ext.ini: ${response.statusText}`);
-            return null;
-        }
+        if (!response.ok) return null;
 
         const iniText = await response.text();
         const lines = iniText.split('\n');
@@ -167,11 +168,11 @@ async function getDestinationFromExtIni(baseUrl, token, apiExtension, origin) {
         
         for (let line of lines) {
             line = line.trim();
-            if (!line || line.startsWith(';')) continue; // התעלמות משורות ריקות או הערות
+            if (!line || line.startsWith(';')) continue; 
             
             const [key, ...valParts] = line.split('=');
             if (key && key.trim() === searchKey) {
-                return valParts.join('=').trim(); // מחזיר את היעד
+                return valParts.join('=').trim(); 
             }
         }
         
@@ -183,7 +184,23 @@ async function getDestinationFromExtIni(baseUrl, token, apiExtension, origin) {
 }
 
 /**
- * פונקציית עזר: ביצוע פעולות על קבצים (Move/Delete) דרך API ימות המשיח
+ * יצירת תיקייה אם אינה קיימת (באמצעות פקודת UpdateExtension)
+ */
+async function ensureFolderExists(baseUrl, token, dest) {
+    let cleanDest = dest.replace('ivr2:', '');
+    if (!cleanDest.startsWith('/')) cleanDest = '/' + cleanDest;
+    
+    const url = `${baseUrl}UpdateExtension?token=${encodeURIComponent(token)}&path=ivr2:${encodeURIComponent(cleanDest)}&type=playfile`;
+    
+    try {
+        await fetch(url); // ימות המשיח תעדכן/תיצור את השלוחה אוטומטית
+    } catch (error) {
+        console.error('Error ensuring folder exists:', error);
+    }
+}
+
+/**
+ * הפעלת פעולות העברה ומחיקה מול ימות המשיח
  */
 async function executeYemotFileAction(baseUrl, token, action, what, target = null) {
     try {
@@ -195,12 +212,7 @@ async function executeYemotFileAction(baseUrl, token, action, what, target = nul
         const response = await fetch(url);
         const data = await response.json();
 
-        if (data.responseStatus === 'OK' && data.success === true) {
-            return true;
-        } else {
-            console.error(`FileAction ${action} failed:`, data);
-            return false;
-        }
+        return (data.responseStatus === 'OK' && data.success === true);
     } catch (error) {
         console.error(`Exception during FileAction ${action}:`, error);
         return false;
@@ -208,7 +220,7 @@ async function executeYemotFileAction(baseUrl, token, action, what, target = nul
 }
 
 /**
- * פונקציית עזר: שולחת תגובה אחידה לימות המשיח (ID List Message)
+ * פונקציית עזר להחזרת תשובה קולית ושמירה על יציבות
  */
 function sendYemotResponse(res, message) {
     return res.status(200).send(`id_list_message=${message}`);
